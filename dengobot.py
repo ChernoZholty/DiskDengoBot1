@@ -5,6 +5,8 @@ from dotenv import load_dotenv
 from datetime import datetime
 import os
 import json
+from flask import Flask
+from threading import Thread
 
 # --- ЛОГИ ---
 logging.basicConfig(level=logging.INFO)
@@ -16,7 +18,7 @@ TOKEN = os.getenv('DISCORD_TOKEN')
 ACTIVE_ROLE_ID = 1407089794240090263
 LOG_CHANNEL_ID = 1407081468525805748        # канал для логов (админ)
 COMMAND_CHANNEL_ID = 1407081468525805748   # канал, где бот будет писать /give mone
-DB_CHANNEL_ID = 1407213722824343602  # создаёшь отдельный приватный канал для "базы"
+DB_CHANNEL_ID = 1407213722824343602  # отдельный приватный канал для "базы"
 
 intents = discord.Intents.default()
 intents.message_content = True
@@ -28,20 +30,26 @@ bot = commands.Bot(command_prefix="*", intents=intents)
 
 voice_times = {}   # {member_id: datetime}
 balances = {}      # {member_id: int}
-db_messages = {}     # {member_id: message_id} — индекс сообщения с балансом
+db_messages = {}   # {member_id: message_id}
 
-# Сколько монет за минуту
 MONEY_PER_MINUTE = 1
 
-@bot.event
-async def on_ready():
-    print(f"Бот запущен как {bot.user}")
+# ---------------- WEB-СЕРВЕР для UptimeRobot ----------------
+app = Flask(__name__)
 
+@app.route("/")
+def home():
+    return "Bot is running!"
 
-# ==================== РАБОТА С БАЗОЙ (одно JSON-сообщение) ====================
+def run_web():
+    app.run(host="0.0.0.0", port=8080)
 
+def keep_alive():
+    t = Thread(target=run_web)
+    t.start()
+
+# ==================== РАБОТА С БАЗОЙ ====================
 async def load_database():
-    """Находит/создаёт единственное JSON-сообщение с базой и загружает balances."""
     global balances, db_message
     db_channel = bot.get_channel(DB_CHANNEL_ID)
     if not db_channel:
@@ -53,13 +61,12 @@ async def load_database():
     last_valid_data = None
     to_delete = []
 
-    # Находим последнее валидное JSON-сообщение-словарь, остальное удаляем
     for m in messages:
         try:
             data = json.loads(m.content)
             if isinstance(data, dict):
                 if last_valid_msg:
-                    to_delete.append(last_valid_msg)  # старое валидное удалим, оставим более новое
+                    to_delete.append(last_valid_msg)
                 last_valid_msg = m
                 last_valid_data = data
             else:
@@ -67,7 +74,6 @@ async def load_database():
         except json.JSONDecodeError:
             to_delete.append(m)
 
-    # Удаляем мусор/дубли (если есть права)
     for m in to_delete:
         try:
             await m.delete()
@@ -80,15 +86,12 @@ async def load_database():
         logging.info(f"База данных загружена. Записей: {len(balances)}")
         return
 
-    # Если валидного сообщения нет — создаём новое пустое
     new_msg = await db_channel.send(json.dumps({}))
     db_message = new_msg
     balances = {}
     logging.info("Создано новое JSON-сообщение для базы.")
 
-
 async def save_database():
-    """Перезаписывает единственное JSON-сообщение актуальным словарём balances."""
     global db_message
     db_channel = bot.get_channel(DB_CHANNEL_ID)
     if not db_channel:
@@ -101,22 +104,18 @@ async def save_database():
             logging.error("Не удалось инициализировать базу.")
             return
 
-    # ключи в JSON должны быть строками
     payload = {str(k): int(v) for k, v in balances.items()}
 
     try:
         await db_message.edit(content=json.dumps(payload, ensure_ascii=False))
         logging.info("База обновлена.")
     except discord.NotFound:
-        # сообщение удалили вручную — создаём заново
         db_message = await db_channel.send(json.dumps(payload, ensure_ascii=False))
         logging.info("База пересоздана (старое сообщение отсутствовало).")
     except Exception as e:
         logging.error(f"Не удалось сохранить базу: {e}")
 
-
 async def change_balance(member: discord.Member, amount: int):
-    """Меняет баланс (amount может быть отрицательным). Не допускает минуса. Сохраняет в базу."""
     old_balance = balances.get(member.id, 0)
     new_balance = old_balance + amount
     if new_balance < 0:
@@ -126,14 +125,11 @@ async def change_balance(member: discord.Member, amount: int):
     await save_database()
     return True, new_balance
 
-
 # ==================== СОБЫТИЯ ====================
-
 @bot.event
 async def on_ready():
     print(f"Бот запущен как {bot.user}")
     await load_database()
-
 
 @bot.event
 async def on_voice_state_update(member, before, after):
@@ -141,7 +137,6 @@ async def on_voice_state_update(member, before, after):
     log_channel = bot.get_channel(LOG_CHANNEL_ID)
     command_channel = bot.get_channel(COMMAND_CHANNEL_ID)
 
-    # Вход в голос
     if before.channel is None and after.channel is not None:
         if role and role not in member.roles:
             try:
@@ -155,7 +150,6 @@ async def on_voice_state_update(member, before, after):
         if command_channel:
             await command_channel.send(f"🎧 {member.mention}, добро пожаловать в {after.channel.mention}!")
 
-    # Выход из голоса
     if before.channel is not None and after.channel is None:
         if role and role in member.roles:
             try:
@@ -191,9 +185,7 @@ async def on_voice_state_update(member, before, after):
                         f"ℹ️ {member} вышел слишком быстро (<1 минуты). Начисления нет."
                     )
 
-
 # ==================== КОМАНДЫ ====================
-
 @bot.command(name="баланс")
 async def balance_cmd(ctx, member: discord.Member = None):
     member = member or ctx.author
@@ -201,11 +193,9 @@ async def balance_cmd(ctx, member: discord.Member = None):
     logging.info(f"*баланс от {ctx.author} → {member} = {balance}")
     await ctx.send(f"💰 Баланс {member.mention}: **{balance}** монет.")
 
-
 @bot.command(name="givemoney")
 @commands.has_permissions(administrator=True)
 async def givemoney_cmd(ctx, amount: int, member: discord.Member):
-    """Положительные суммы — начисляем, отрицательные — списываем (не ниже 0)."""
     success, total_balance = await change_balance(member, amount)
     if not success:
         await ctx.send(f"⚠️ Нельзя уменьшить баланс {member.mention} ниже нуля! "
@@ -219,28 +209,23 @@ async def givemoney_cmd(ctx, amount: int, member: discord.Member):
     else:
         await ctx.send("⚠️ Изменение на 0 монет не имеет смысла.")
 
-
 @bot.command(name="takemoney")
 @commands.has_permissions(administrator=True)
 async def takemoney_cmd(ctx, amount: int, member: discord.Member):
-    """Удобное списание: *takemoney 50 @user"""
     if amount <= 0:
         await ctx.send("⚠️ Укажи положительную сумму для списания, например: *takemoney 50 @user")
         return
     await givemoney_cmd(ctx, -amount, member)
 
-
 @bot.command(name="cleardb")
 @commands.has_permissions(administrator=True)
 async def cleardb_cmd(ctx):
-    """Полностью очищает базу: удаляет все сообщения в DB-канале и создаёт пустую JSON-базу."""
     global balances, db_message
     db_channel = bot.get_channel(DB_CHANNEL_ID)
     if not db_channel:
         await ctx.send("❌ Канал базы данных не найден.")
         return
 
-    # удаляем все сообщения базы
     msgs = [m async for m in db_channel.history(limit=None)]
     for m in msgs:
         try:
@@ -248,11 +233,11 @@ async def cleardb_cmd(ctx):
         except Exception:
             pass
 
-    # создаём пустую
     balances = {}
     db_message = await db_channel.send(json.dumps({}))
     await ctx.send("✅ База очищена. Все балансы сброшены на 0.")
 
-
 # ==================== ЗАПУСК ====================
-bot.run(TOKEN)
+if __name__ == "__main__":
+    keep_alive()  # Запускаем веб-сервер для UptimeRobot
+    bot.run(TOKEN)
