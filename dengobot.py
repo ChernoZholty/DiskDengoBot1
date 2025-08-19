@@ -10,40 +10,35 @@ from threading import Thread
 
 # --- ЛОГИ ---
 logging.basicConfig(level=logging.INFO)
-
 load_dotenv()
 TOKEN = os.getenv('DISCORD_TOKEN')
 
 # --- ID РОЛИ + КАНАЛОВ ---
 ACTIVE_ROLE_ID = 1407089794240090263
-LOG_CHANNEL_ID = 1407081468525805748        # канал для логов (админ)
-COMMAND_CHANNEL_ID = 1407081468525805748   # канал, где бот будет писать /give mone
+LOG_CHANNEL_ID = 1407081468525805748  # канал для логов (админ)
+COMMAND_CHANNEL_ID = 1407081468525805748  # канал, где бот будет писать /give mone
 DB_CHANNEL_ID = 1407213722824343602  # отдельный приватный канал для "базы"
+LEADERBOARD_CHANNEL_ID = 1407421547785883749  # ЛИДЕРБОРД
 
 intents = discord.Intents.default()
 intents.message_content = True
 intents.guilds = True
 intents.members = True
 intents.voice_states = True
-
 bot = commands.Bot(command_prefix="*", intents=intents)
 
-voice_times = {}   # {member_id: datetime}
-balances = {}      # {member_id: int}
-db_messages = {}   # {member_id: message_id}
-
+voice_times = {}  # {member_id: datetime}
+balances = {}  # {member_id: int}
+db_messages = {}  # {member_id: message_id}
 MONEY_PER_MINUTE = 1
 
 # ---------------- WEB-СЕРВЕР для UptimeRobot ----------------
 app = Flask(__name__)
-
 @app.route("/")
 def home():
     return "Bot is running!"
-
 def run_web():
     app.run(host="0.0.0.0", port=8080)
-
 def keep_alive():
     t = Thread(target=run_web)
     t.start()
@@ -55,12 +50,10 @@ async def load_database():
     if not db_channel:
         logging.error("DB_CHANNEL_ID неверный или бот не видит канал.")
         return
-
     messages = [m async for m in db_channel.history(limit=None, oldest_first=True)]
     last_valid_msg = None
     last_valid_data = None
     to_delete = []
-
     for m in messages:
         try:
             data = json.loads(m.content)
@@ -73,19 +66,16 @@ async def load_database():
                 to_delete.append(m)
         except json.JSONDecodeError:
             to_delete.append(m)
-
     for m in to_delete:
         try:
             await m.delete()
         except Exception:
             pass
-
     if last_valid_msg is not None:
         balances = {int(k): int(v) for k, v in last_valid_data.items()}
         db_message = last_valid_msg
         logging.info(f"База данных загружена. Записей: {len(balances)}")
         return
-
     new_msg = await db_channel.send(json.dumps({}))
     db_message = new_msg
     balances = {}
@@ -97,15 +87,12 @@ async def save_database():
     if not db_channel:
         logging.error("DB_CHANNEL_ID неверный или бот не видит канал.")
         return
-
     if not db_message:
         await load_database()
-        if not db_message:
-            logging.error("Не удалось инициализировать базу.")
-            return
-
+    if not db_message:
+        logging.error("Не удалось инициализировать базу.")
+        return
     payload = {str(k): int(v) for k, v in balances.items()}
-
     try:
         await db_message.edit(content=json.dumps(payload, ensure_ascii=False))
         logging.info("База обновлена.")
@@ -120,16 +107,38 @@ async def change_balance(member: discord.Member, amount: int):
     new_balance = old_balance + amount
     if new_balance < 0:
         return False, old_balance
-
     balances[member.id] = new_balance
     await save_database()
+    await update_leaderboard()  # ЛИДЕРБОРД
     return True, new_balance
+
+# ==================== ЛИДЕРБОРД ====================
+async def update_leaderboard():
+    channel = bot.get_channel(LEADERBOARD_CHANNEL_ID)
+    if not channel:
+        logging.error("LEADERBOARD_CHANNEL_ID неверный или бот не видит канал.")
+        return
+
+    top = sorted(balances.items(), key=lambda x: x[1], reverse=True)
+    lines = []
+    for i, (user_id, balance) in enumerate(top[:10], start=1):
+        member = channel.guild.get_member(user_id)
+        name = member.display_name if member else f"User {user_id}"
+        lines.append(f"**{i}. {name}** — 💰 {balance} монет")
+    text = "🏆 **Топ участников по балансу:**\n\n" + "\n".join(lines) if lines else "Пока нет данных."
+
+    async for msg in channel.history(limit=50):
+        if msg.author == bot.user:
+            await msg.edit(content=text)
+            return
+    await channel.send(text)
 
 # ==================== СОБЫТИЯ ====================
 @bot.event
 async def on_ready():
     print(f"Бот запущен как {bot.user}")
     await load_database()
+    await update_leaderboard()  # ЛИДЕРБОРД при старте
 
 @bot.event
 async def on_voice_state_update(member, before, after):
@@ -144,27 +153,22 @@ async def on_voice_state_update(member, before, after):
             except discord.Forbidden:
                 logging.warning("Нет прав выдавать роль.")
         voice_times[member.id] = datetime.now()
-
         if log_channel:
             await log_channel.send(f"✅ {member} зашёл в {after.channel}, роль выдана.")
         if command_channel:
             await command_channel.send(f"🎧 {member.mention}, добро пожаловать в {after.channel.mention}!")
-
     if before.channel is not None and after.channel is None:
         if role and role in member.roles:
             try:
                 await member.remove_roles(role)
             except discord.Forbidden:
                 logging.warning("Нет прав снимать роль.")
-
         if member.id in voice_times:
             join_time = voice_times.pop(member.id)
             minutes = int((datetime.now() - join_time).total_seconds() // 60)
-
             if minutes > 0:
                 money = minutes * MONEY_PER_MINUTE
                 success, total_balance = await change_balance(member, money)
-
                 if success and command_channel:
                     await command_channel.send(
                         f"💰 {member.mention}, тебе начислено **{money}** монет "
@@ -201,7 +205,6 @@ async def givemoney_cmd(ctx, amount: int, member: discord.Member):
         await ctx.send(f"⚠️ Нельзя уменьшить баланс {member.mention} ниже нуля! "
                        f"(текущий баланс: {total_balance})")
         return
-
     if amount > 0:
         await ctx.send(f"✅ {member.mention} получил {amount} монет. Баланс: {total_balance}")
     elif amount < 0:
@@ -225,14 +228,12 @@ async def cleardb_cmd(ctx):
     if not db_channel:
         await ctx.send("❌ Канал базы данных не найден.")
         return
-
     msgs = [m async for m in db_channel.history(limit=None)]
     for m in msgs:
         try:
             await m.delete()
         except Exception:
             pass
-
     balances = {}
     db_message = await db_channel.send(json.dumps({}))
     await ctx.send("✅ База очищена. Все балансы сброшены на 0.")
