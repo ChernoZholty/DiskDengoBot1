@@ -25,7 +25,6 @@ intents.message_content = True
 intents.guilds = True
 intents.members = True
 intents.voice_states = True
-
 bot = commands.Bot(command_prefix="*", intents=intents)
 
 voice_times = {}  # {member_id: datetime}
@@ -147,19 +146,12 @@ async def on_voice_state_update(member, before, after):
     log_channel = bot.get_channel(LOG_CHANNEL_ID)
     command_channel = bot.get_channel(COMMAND_CHANNEL_ID)
 
-  if before.channel is None and after.channel is not None:
-    if not role:
-        logging.warning(f"Роль с ID {ACTIVE_ROLE_ID} не найдена!")
-    elif role in member.roles:
-        logging.info(f"{member} уже имеет роль {role.name}")
-    else:
-        try:
-            await member.add_roles(role)
-            logging.info(f"Роль {role.name} выдана {member}")
-        except discord.Forbidden:
-            logging.warning(f"Нет прав выдавать роль {role.name} {member}")
-        except Exception as e:
-            logging.error(f"Ошибка при выдаче роли {role.name} {member}: {e}")
+    if before.channel is None and after.channel is not None:
+        if role and role not in member.roles:
+            try:
+                await member.add_roles(role)
+            except discord.Forbidden:
+                logging.warning("Нет прав выдавать роль.")
         voice_times[member.id] = datetime.now()
         if log_channel:
             await log_channel.send(f"✅ {member} зашёл в {after.channel}, роль выдана.")
@@ -250,4 +242,3 @@ async def cleardb_cmd(ctx):
 if __name__ == "__main__":
     keep_alive()  # Запускаем веб-сервер для UptimeRobot
     bot.run(TOKEN)
-
