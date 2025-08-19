@@ -15,6 +15,7 @@ TOKEN = os.getenv('DISCORD_TOKEN')
 ACTIVE_ROLE_ID = 1407089794240090263
 LOG_CHANNEL_ID = 1407081468525805748        # канал для логов (админ)
 COMMAND_CHANNEL_ID = 1407081468525805748   # канал, где бот будет писать /give mone
+DB_CHANNEL_ID = 1407213722824343602  # создаёшь отдельный приватный канал для "базы"
 
 intents = discord.Intents.default()
 intents.message_content = True
@@ -24,9 +25,7 @@ intents.voice_states = True
 
 bot = commands.Bot(command_prefix="*", intents=intents)
 
-# словарь для хранения времени входа
 voice_times = {}   # {member_id: datetime}
-# словарь для хранения балансов
 balances = {}      # {member_id: int}
 
 # Сколько монет за минуту
@@ -37,6 +36,45 @@ async def on_ready():
     print(f"Бот запущен как {bot.user}")
 
 
+# --- функции для "базы" ---
+async def load_balances():
+    """Загружаем все балансы из канала"""
+    db_channel = bot.get_channel(DB_CHANNEL_ID)
+    if not db_channel:
+        logging.error("❌ Канал для базы не найден!")
+        return
+
+    async for msg in db_channel.history(limit=None, oldest_first=True):
+        try:
+            user_id, balance = msg.content.split(":")
+            balances[int(user_id)] = int(balance)
+        except ValueError:
+            continue
+
+
+async def save_balance(user_id: int):
+    """Обновляем/создаём сообщение с балансом"""
+    db_channel = bot.get_channel(DB_CHANNEL_ID)
+    if not db_channel:
+        logging.error("❌ Канал для базы не найден!")
+        return
+
+    # ищем сообщение с балансом этого юзера
+    async for msg in db_channel.history(limit=None):
+        if msg.content.startswith(f"{user_id}:"):
+            await msg.edit(content=f"{user_id}:{balances[user_id]}")
+            return
+
+    # если не нашли, создаём новое
+    await db_channel.send(f"{user_id}:{balances[user_id]}")
+
+
+@bot.event
+async def on_ready():
+    await load_balances()
+    print(f"Бот запущен как {bot.user}, загружено {len(balances)} балансов.")
+
+
 @bot.event
 async def on_voice_state_update(member, before, after):
     guild = member.guild
@@ -44,19 +82,14 @@ async def on_voice_state_update(member, before, after):
     log_channel = bot.get_channel(LOG_CHANNEL_ID)
     command_channel = bot.get_channel(COMMAND_CHANNEL_ID)
 
-    # Вход в голос
-    if before.channel is None and after.channel is not None:
+    if before.channel is None and after.channel is not None:  # вход
         if role not in member.roles:
             await member.add_roles(role)
         voice_times[member.id] = datetime.now()
-
         if log_channel:
             await log_channel.send(f"✅ {member} зашёл в {after.channel}, роль выдана.")
-        if command_channel:
-            await command_channel.send(f"🎧 {member.mention}, добро пожаловать в {after.channel.mention}!")
 
-    # Выход из голоса
-    if before.channel is not None and after.channel is None:
+    if before.channel is not None and after.channel is None:  # выход
         if role in member.roles:
             await member.remove_roles(role)
 
@@ -67,27 +100,21 @@ async def on_voice_state_update(member, before, after):
             if minutes > 0:
                 money = minutes * MONEY_PER_MINUTE
                 balances[member.id] = balances.get(member.id, 0) + money
-                total_balance = balances[member.id]
+                await save_balance(member.id)  # сохраняем в "базу"
 
-                if log_channel:
-                    await log_channel.send(
-                        f"❌ {member} вышел из {before.channel}, роль снята. "
-                        f"Начислено {minutes} мин × {MONEY_PER_MINUTE} = **{money}** монет. "
-                        f"Итоговый баланс: **{total_balance}**."
-                    )
+                total_balance = balances[member.id]
                 if command_channel:
                     await command_channel.send(
                         f"💰 {member.mention}, тебе начислено **{money}** монет "
-                        f"(за {minutes} мин). Текущий баланс: **{total_balance}**."
+                        f"(за {minutes} мин). Баланс: **{total_balance}**."
                     )
             else:
-                if log_channel:
-                    await log_channel.send(f"❌ {member} вышел слишком быстро (<1 минуты). Ничего не начислено.")
                 if command_channel:
-                    await command_channel.send(f"⚠️ {member.mention}, ты был в войсе меньше минуты, монеты не начислены.")
+                    await command_channel.send(
+                        f"⚠️ {member.mention}, был в войсе <1 мин. Монеты не начислены."
+                    )
 
 
-# Команда для проверки баланса
 @bot.command(name="баланс")
 async def balance(ctx, member: discord.Member = None):
     member = member or ctx.author
@@ -95,25 +122,17 @@ async def balance(ctx, member: discord.Member = None):
     await ctx.send(f"💰 Баланс {member.mention}: **{balance}** монет.")
 
 
-# Команда для ручной выдачи монет
 @bot.command(name="givemoney")
-@commands.has_permissions(administrator=True)  # только админам
+@commands.has_permissions(administrator=True)
 async def givemoney(ctx, amount: int, member: discord.Member):
     if amount <= 0:
         await ctx.send("⚠️ Сумма должна быть положительной!")
         return
 
     balances[member.id] = balances.get(member.id, 0) + amount
+    await save_balance(member.id)  # сохраняем в "базу"
+
     total_balance = balances[member.id]
-
-    log_channel = bot.get_channel(LOG_CHANNEL_ID)
-    command_channel = bot.get_channel(COMMAND_CHANNEL_ID)
-
-    if log_channel:
-        await log_channel.send(f"🛠 {ctx.author} начислил {amount} монет пользователю {member}. Итоговый баланс: {total_balance}.")
-    if command_channel:
-        await command_channel.send(f"💰 {member.mention}, тебе вручную добавили **{amount}** монет. Итоговый баланс: **{total_balance}**.")
-
     await ctx.send(f"✅ {member.mention} получил {amount} монет. Итоговый баланс: {total_balance}")
 
 
