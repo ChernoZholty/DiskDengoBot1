@@ -194,8 +194,16 @@ async def on_voice_state_update(member, before, after):
 async def balance_cmd(ctx, member: discord.Member = None):
     member = member or ctx.author
     balance = balances.get(member.id, 0)
-    logging.info(f"*баланс от {ctx.author} → {member} = {balance}")
-    await ctx.send(f"💰 Баланс {member.mention}: **{balance}** монет.")
+
+    # Отправляем ответ и удаляем его через 30 секунд
+    msg = await ctx.send(f"💰 Баланс {member.mention}: **{balance}** монет.")
+    await msg.delete(delay=30)
+
+    # Удаляем сообщение с командой пользователя (если есть права)
+    try:
+        await ctx.message.delete()
+    except discord.Forbidden:
+        pass  # если у бота нет прав удалять сообщения
 
 @bot.command(name="givemoney")
 @commands.has_permissions(administrator=True)
@@ -242,3 +250,4 @@ async def cleardb_cmd(ctx):
 if __name__ == "__main__":
     keep_alive()  # Запускаем веб-сервер для UptimeRobot
     bot.run(TOKEN)
+
