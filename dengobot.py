@@ -246,8 +246,60 @@ async def cleardb_cmd(ctx):
     db_message = await db_channel.send(json.dumps({}))
     await ctx.send("✅ База очищена. Все балансы сброшены на 0.")
 
+# ==================== БАТЛЫ ====================
+active_battles = {}
+JUDGE_ROLE_ID = 1407534809034784879
+
+def generate_battle_id(members):
+    return "_".join(str(m.id) for m in members)
+
+@bot.command(name="батл1")
+async def battle1_cmd(ctx, *members: discord.Member):
+    if not members:
+        await ctx.send("⚠️ Укажи хотя бы одного участника для команды 1.")
+        return
+
+    battle_id = generate_battle_id(members)
+    if battle_id in active_battles:
+        await ctx.send(f"⚠️ Батл с таким ID уже существует: {battle_id}")
+        return
+
+    active_battles[battle_id] = {"team1": list(members), "team2": []}
+    team_list = ", ".join(m.mention for m in members)
+    await ctx.send(f"✅ Команда 1 зарегистрирована. ID батла: {battle_id}\n👥 Состав команды 1: {team_list}")
+
+@bot.command(name="батл2")
+async def battle2_cmd(ctx, battle_id: str, *members: discord.Member):
+    if battle_id not in active_battles:
+        await ctx.send("⚠️ Указанный ID батла не найден.")
+        return
+    if not members:
+        await ctx.send("⚠️ Укажи хотя бы одного участника для команды 2.")
+        return
+
+    if active_battles[battle_id]["team2"]:
+        await ctx.send("⚠️ Для этого батла команда 2 уже зарегистрирована.")
+        return
+
+    active_battles[battle_id]["team2"] = list(members)
+    team_list = ", ".join(m.mention for m in members)
+    await ctx.send(f"✅ Команда 2 зарегистрирована для батла {battle_id}.\n👥 Состав команды 2: {team_list}")
+
+@bot.command(name="батл_отмена")
+async def cancel_battle_cmd(ctx, battle_id: str):
+    judge_role = ctx.guild.get_role(JUDGE_ROLE_ID)
+    if judge_role not in ctx.author.roles:
+        await ctx.send("❌ Только Судья может отменять батлы.")
+        return
+
+    if battle_id not in active_battles:
+        await ctx.send("⚠️ Батл с таким ID не найден.")
+        return
+
+    del active_battles[battle_id]
+    await ctx.send(f"🛑 Батл {battle_id} был отменён судьёй {ctx.author.mention}.")
+
 # ==================== ЗАПУСК ====================
 if __name__ == "__main__":
     keep_alive()  # Запускаем веб-сервер для UptimeRobot
     bot.run(TOKEN)
-
