@@ -505,7 +505,7 @@ async def end_battle_places(ctx, battle_id: str):
     )
 
 
-# Меню товаров
+# ====================  Меню товаров ==================== 
 shop_items = [
     {"name": "Призыв меня в голосовой канал на (как минимум) 5 минут", "price": 50, "emoji": "🎤"},
     {"name": "Собственная роль", "price": 1000, "emoji": "📜"},
@@ -517,10 +517,11 @@ shop_items = [
 ]
 
 @bot.command(name="магазин")
+@commands.has_permissions(administrator=True)  # Только администратор
 async def shop_cmd(ctx):
     embed = discord.Embed(
         title="🛒 Магазин",
-        description="Для покупки: нажмите на реакцию товара и ✅ для подтверждения. Сообщение исчезнет через 1 час.",
+        description="Для покупки: нажмите на реакцию товара и ✅ для подтверждения.",
         color=discord.Color.gold()
     )
 
@@ -550,7 +551,8 @@ async def shop_cmd(ctx):
 
             if str(reaction.emoji) == "✅":
                 if user.id not in user_choices:
-                    await ctx.send(f"⚠️ {user.mention}, сначала выбери товар!")
+                    warn_msg = await ctx.send(f"⚠️ {user.mention}, сначала выбери товар!")
+                    await warn_msg.delete(delay=15)
                     continue
 
                 item = user_choices[user.id]
@@ -558,7 +560,8 @@ async def shop_cmd(ctx):
                 bal = balances.get(user.id, 0)
 
                 if bal < price:
-                    await ctx.send(f"❌ {user.mention}, недостаточно монет для покупки **{item['name']}**.")
+                    error_msg = await ctx.send(f"❌ {user.mention}, недостаточно монет для покупки **{item['name']}**.")
+                    await error_msg.delete(delay=15)
                     continue
 
                 # Списываем деньги
@@ -575,29 +578,29 @@ async def shop_cmd(ctx):
                     f"🛍️ Товар: **{item['name']}** ({price} монет)"
                 )
 
-                # Ответ пользователю
+                # Ответ пользователю (удаляется через 15 сек)
                 confirm_msg = await ctx.send(
                     f"✅ {user.mention}, заказ {order_id} оформлен!\n"
                     f"Ты купил **{item['name']}** за {price} монет."
                 )
+                await confirm_msg.delete(delay=15)
 
             else:
-                # Пользователь выбрал товар
+                # Пользователь выбрал товар (сообщение удаляется через 15 сек)
                 for item in shop_items:
                     if str(reaction.emoji) == item["emoji"]:
                         user_choices[user.id] = item
-                        await ctx.send(f"🛒 {user.mention}, выбран товар: **{item['name']}** ({item['price']} монет).")
+                        choice_msg = await ctx.send(
+                            f"🛒 {user.mention}, выбран товар: **{item['name']}** ({item['price']} монет)."
+                        )
+                        await choice_msg.delete(delay=15)
                         break
-
     except asyncio.TimeoutError:
-        # Удаляем сообщение магазина по истечении времени
-        try:
-            await shop_msg.delete()
-        except:
-            pass
+        pass
 
 
 # ==================== ЗАПУСК ====================
 if __name__ == "__main__":
     keep_alive()  # Запускаем веб-сервер для UptimeRobot
     bot.run(TOKEN)
+
