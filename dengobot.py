@@ -5,6 +5,8 @@ from dotenv import load_dotenv
 from datetime import datetime
 import os
 import json
+import random
+import asyncio
 from flask import Flask
 from threading import Thread
 from discord.ui import View, Button
@@ -20,6 +22,7 @@ LOG_CHANNEL_ID = 1407081468525805748  # канал для логов (админ
 COMMAND_CHANNEL_ID = 1407081468525805748  # канал, где бот будет писать /give mone
 DB_CHANNEL_ID = 1407213722824343602  # отдельный приватный канал для "базы"
 LEADERBOARD_CHANNEL_ID = 1407421547785883749  # ЛИДЕРБОРД
+ORDERS_CHANNEL_ID = 1408282847185338418 # Канал для заказов
 
 intents = discord.Intents.default()
 intents.message_content = True
@@ -500,6 +503,98 @@ async def end_battle_places(ctx, battle_id: str):
         f"💰 Общий банк: {total_bank}\n\n" +
         ("\n".join(results) if results else "Никто не участвовал.")
     )
+
+
+# Меню товаров
+shop_items = [
+    {"name": "Призыв меня в голосовой канал на (как минимум) 5 минут", "price": 50, "emoji": "🎤"},
+    {"name": "Собственная роль", "price": 1000, "emoji": "📜"},
+    {"name": "Дать роль другому участнику", "price": 1500, "emoji": "🐉"},
+    {"name": "Убрать чужую роль", "price": 500, "emoji": "😭"},
+    {"name": "Выделенная роль", "price": 2500, "emoji": "🤩"},
+    {"name": "Убрать (Лайк) ((Один раз за вайп))", "price": 5000, "emoji": "🙏"},
+    {"name": "Попасть в титры видео", "price": 10000, "emoji": "🏅"},
+]
+
+@bot.command(name="магазин")
+async def shop_cmd(ctx):
+    embed = discord.Embed(
+        title="🛒 Магазин",
+        description="Для покупки: нажмите на реакцию товара и ✅ для подтверждения. Сообщение исчезнет через 1 час.",
+        color=discord.Color.gold()
+    )
+
+    description = ""
+    for item in shop_items:
+        description += f"{item['emoji']} **{item['name']}** — {item['price']} монет\n"
+    embed.add_field(name="Товары", value=description, inline=False)
+
+    shop_msg = await ctx.send(embed=embed)
+
+    # Добавляем реакции
+    for item in shop_items:
+        await shop_msg.add_reaction(item['emoji'])
+    await shop_msg.add_reaction("✅")
+
+    def check(reaction, user):
+        return (
+            user != bot.user
+            and reaction.message.id == shop_msg.id
+        )
+
+    user_choices = {}
+
+    try:
+        while True:
+            reaction, user = await bot.wait_for("reaction_add", timeout=3600, check=check)
+
+            if str(reaction.emoji) == "✅":
+                if user.id not in user_choices:
+                    await ctx.send(f"⚠️ {user.mention}, сначала выбери товар!")
+                    continue
+
+                item = user_choices[user.id]
+                price = item["price"]
+                bal = balances.get(user.id, 0)
+
+                if bal < price:
+                    await ctx.send(f"❌ {user.mention}, недостаточно монет для покупки **{item['name']}**.")
+                    continue
+
+                # Списываем деньги
+                balances[user.id] = bal - price
+                await save_database()
+
+                # Генерируем номер заказа
+                order_id = f"N{random.randint(1000, 9999)}"
+
+                # Сообщение в канал заказов
+                orders_channel = bot.get_channel(ORDERS_CHANNEL_ID)
+                await orders_channel.send(
+                    f"📦 Заказ {order_id}\n👤 Покупатель: {user.mention}\n"
+                    f"🛍️ Товар: **{item['name']}** ({price} монет)"
+                )
+
+                # Ответ пользователю
+                confirm_msg = await ctx.send(
+                    f"✅ {user.mention}, заказ {order_id} оформлен!\n"
+                    f"Ты купил **{item['name']}** за {price} монет."
+                )
+
+            else:
+                # Пользователь выбрал товар
+                for item in shop_items:
+                    if str(reaction.emoji) == item["emoji"]:
+                        user_choices[user.id] = item
+                        await ctx.send(f"🛒 {user.mention}, выбран товар: **{item['name']}** ({item['price']} монет).")
+                        break
+
+    except asyncio.TimeoutError:
+        # Удаляем сообщение магазина по истечении времени
+        try:
+            await shop_msg.delete()
+        except:
+            pass
 
 
 # ==================== ЗАПУСК ====================
