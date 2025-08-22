@@ -23,6 +23,7 @@ COMMAND_CHANNEL_ID = 1407081468525805748  # канал, где бот будет
 DB_CHANNEL_ID = 1407213722824343602  # отдельный приватный канал для "базы"
 LEADERBOARD_CHANNEL_ID = 1407421547785883749  # ЛИДЕРБОРД
 ORDERS_CHANNEL_ID = 1408282847185338418 # Канал для заказов
+JUDGES_CHANNEL_ID = 1408318242916798505 # Канал для заявок на батл
 
 intents = discord.Intents.default()
 intents.message_content = True
@@ -504,6 +505,69 @@ async def end_battle_places(ctx, battle_id: str):
         ("\n".join(results) if results else "Никто не участвовал.")
     )
 
+#=============== Кинуть перчатку в @user ====================
+@bot.command(name="кинуть-перчатку-в")
+async def challenge_cmd(ctx, opponent: discord.Member):
+    challenger = ctx.author
+
+    # Проверка: нельзя вызвать самого себя
+    if opponent.id == challenger.id:
+        await ctx.send("⚠️ Ты не можешь бросить перчатку самому себе!")
+        return
+
+    # Проверка: у оппонента должен быть баланс
+    opp_balance = balances.get(opponent.id, 0)
+    if opp_balance <= 0:
+        return  # тишина, чтобы не беспокоить
+
+    # Сообщение с вызовом
+    msg = await ctx.send(
+        f"🥊 {opponent.mention}, тебе бросил перчатку {challenger.mention}!\n"
+        f"Нажми ✅, если принимаешь вызов."
+    )
+    await msg.add_reaction("✅")
+
+    def check(reaction, user):
+        return (
+            user == opponent
+            and str(reaction.emoji) == "✅"
+            and reaction.message.id == msg.id
+        )
+
+    try:
+        # Ждём реакции оппонента
+        await bot.wait_for("reaction_add", timeout=300, check=check)
+
+        # Генерируем ID батла
+        battle_id = f"battle_{random.randint(1000, 9999)}"
+
+        # Отправляем в канал судей
+        judges_channel = bot.get_channel(JUDGES_CHANNEL_ID)
+
+        class BattleView(View):
+            def __init__(self):
+                super().__init__(timeout=None)
+
+            @discord.ui.button(label="Взять батл", style=discord.ButtonStyle.primary)
+            async def take_battle(self, interaction: discord.Interaction, button: Button):
+                await interaction.response.send_message(
+                    f"✅ Судья {interaction.user.mention} взял батл {battle_id} под своё крыло!",
+                    ephemeral=False
+                )
+                # Можно добавить запись в базу, кто ведёт батл
+                self.stop()
+
+        await judges_channel.send(
+            f"⚔️ Новый батл: **{battle_id}**\n"
+            f"👤 Игрок 1: {challenger.mention}\n"
+            f"👤 Игрок 2: {opponent.mention}",
+            view=BattleView()
+        )
+
+        await ctx.send(f"✅ Батл принят! Код батла: **{battle_id}**")
+
+    except asyncio.TimeoutError:
+        await ctx.send(f"⌛ {opponent.mention} не принял вызов. Батл отменён.")
 
 # ====================  Меню товаров ==================== 
 shop_items = [
@@ -599,8 +663,8 @@ async def shop_cmd(ctx):
         pass
 
 
+
 # ==================== ЗАПУСК ====================
 if __name__ == "__main__":
     keep_alive()  # Запускаем веб-сервер для UptimeRobot
     bot.run(TOKEN)
-
