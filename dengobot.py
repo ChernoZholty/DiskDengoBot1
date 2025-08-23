@@ -663,8 +663,18 @@ async def shop_cmd(ctx):
         pass
 
 
+#=============Таймаут запросов===================
+async def some_function():
+    # Выполнение запроса
+    await asyncio.sleep(1)  # Пауза в 1 секунду между запросами
+
+# Основной цикл
+async def main():
+    await some_function()
+
 
 # ==================== ЗАПУСК ====================
 if __name__ == "__main__":
     keep_alive()  # Запускаем веб-сервер для UptimeRobot
+    asyncio.run(main())
     bot.run(TOKEN)
