@@ -18,12 +18,13 @@ TOKEN = os.getenv('DISCORD_TOKEN')
 
 # --- ID РОЛИ + КАНАЛОВ ---
 ACTIVE_ROLE_ID = 1407089794240090263
-LOG_CHANNEL_ID = 1407081468525805748  # канал для логов (админ)
-COMMAND_CHANNEL_ID = 1407081468525805748  # канал, где бот будет писать /give mone
-DB_CHANNEL_ID = 1407213722824343602  # отдельный приватный канал для "базы"
-LEADERBOARD_CHANNEL_ID = 1407421547785883749  # ЛИДЕРБОРД
-ORDERS_CHANNEL_ID = 1408282847185338418 # Канал для заказов
-JUDGES_CHANNEL_ID = 1408318242916798505 # Канал для заявок на батл
+LOG_CHANNEL_ID = 1407081468525805748
+COMMAND_CHANNEL_ID = 1407081468525805748
+DB_CHANNEL_ID = 1407213722824343602
+LEADERBOARD_CHANNEL_ID = 1407421547785883749
+ORDERS_CHANNEL_ID = 1408282847185338418
+JUDGES_CHANNEL_ID = 1408318242916798505
+DUELS_CHANNEL_ID = 1409123208543604786  # Канал для анкет дуэлей
 
 intents = discord.Intents.default()
 intents.message_content = True
@@ -32,10 +33,11 @@ intents.members = True
 intents.voice_states = True
 bot = commands.Bot(command_prefix="*", intents=intents)
 
-voice_times = {}  # {member_id: datetime}
-balances = {}  # {member_id: int}
-db_messages = {}  # {member_id: message_id}
+voice_times = {}
+balances = {}
+db_messages = {}
 MONEY_PER_MINUTE = 1
+active_duels = {}  # Для хранения данных о дуэлях
 
 # ---------------- WEB-СЕРВЕР для UptimeRobot ----------------
 app = Flask(__name__)
@@ -114,7 +116,7 @@ async def change_balance(member: discord.Member, amount: int):
         return False, old_balance
     balances[member.id] = new_balance
     await save_database()
-    await update_leaderboard()  # ЛИДЕРБОРД
+    await update_leaderboard()
     return True, new_balance
 
 # ==================== ЛИДЕРБОРД ====================
@@ -143,7 +145,7 @@ async def update_leaderboard():
 async def on_ready():
     print(f"Бот запущен как {bot.user}")
     await load_database()
-    await update_leaderboard()  # ЛИДЕРБОРД при старте
+    await update_leaderboard()
 
 @bot.event
 async def on_voice_state_update(member, before, after):
@@ -201,18 +203,12 @@ async def balance(ctx, member: discord.Member = None):
         member = ctx.author
 
     bal = balances.get(member.id, 0)
-    
-    # Используем display_name, чтобы выводить то имя, которое видно другим пользователям на сервере
     msg = await ctx.send(f"\U0001F4B0 Баланс {member.display_name}: {bal} монет")
-
-    # Удаляем сообщение с балансом через 15 секунд
     await msg.delete(delay=15)
-
-    # Удаляем сообщение с командой пользователя (если у бота есть права)
     try:
         await ctx.message.delete(delay=15)
     except discord.Forbidden:
-        pass  # если у бота нет прав удалять сообщения
+        pass
 
 @bot.command(name="givemoney")
 @commands.has_permissions(administrator=True)
@@ -255,135 +251,9 @@ async def cleardb_cmd(ctx):
     db_message = await db_channel.send(json.dumps({}))
     await ctx.send("✅ База очищена. Все балансы сброшены на 0.")
 
-# ==================== БАТЛЫ ====================
-active_battles = {}
-JUDGE_ROLE_ID = 1407534809034784879
-
-def generate_battle_id(members):
-    return "_".join(str(m.id) for m in members)
-
-@bot.command(name="батл1")
-async def battle1_cmd(ctx, *members: discord.Member):
-    if not members:
-        await ctx.send("⚠️ Укажи хотя бы одного участника для команды 1.")
-        return
-
-    battle_id = generate_battle_id(members)
-    if battle_id in active_battles:
-        await ctx.send(f"⚠️ Батл с таким ID уже существует: {battle_id}")
-        return
-
-    active_battles[battle_id] = {"team1": list(members), "team2": []}
-    team_list = ", ".join(m.mention for m in members)
-    await ctx.send(f"✅ Команда 1 зарегистрирована. ID батла: {battle_id}\n👥 Состав команды 1: {team_list}")
-
-@bot.command(name="батл2")
-async def battle2_cmd(ctx, battle_id: str, *members: discord.Member):
-    if battle_id not in active_battles:
-        await ctx.send("⚠️ Указанный ID батла не найден.")
-        return
-    if not members:
-        await ctx.send("⚠️ Укажи хотя бы одного участника для команды 2.")
-        return
-
-    if active_battles[battle_id]["team2"]:
-        await ctx.send("⚠️ Для этого батла команда 2 уже зарегистрирована.")
-        return
-
-    active_battles[battle_id]["team2"] = list(members)
-    team_list = ", ".join(m.mention for m in members)
-    await ctx.send(f"✅ Команда 2 зарегистрирована для батла {battle_id}.\n👥 Состав команды 2: {team_list}")
-
-@bot.command(name="батл_отмена")
-async def cancel_battle_cmd(ctx, battle_id: str):
-    judge_role = ctx.guild.get_role(JUDGE_ROLE_ID)
-    if judge_role not in ctx.author.roles:
-        await ctx.send("❌ Только Судья может отменять батлы.")
-        return
-
-    if battle_id not in active_battles:
-        await ctx.send("⚠️ Батл с таким ID не найден.")
-        return
-
-    del active_battles[battle_id]
-    await ctx.send(f"🛑 Батл {battle_id} был отменён судьёй {ctx.author.mention}.")
-
-@bot.command(name="победа")
-async def victory_cmd(ctx, battle_id: str, winner: str):
-    judge_role = ctx.guild.get_role(JUDGE_ROLE_ID)
-    if judge_role not in ctx.author.roles:
-        await ctx.send("❌ Только Судья может завершать батлы.")
-        return
-
-    if battle_id not in active_battles:
-        await ctx.send("⚠️ Батл с таким ID не найден.")
-        return
-
-    battle = active_battles[battle_id]
-    team1 = battle["team1"]
-    team2 = battle["team2"]
-
-    if not team1 or not team2:
-        await ctx.send("⚠️ Обе команды должны быть зарегистрированы.")
-        return
-
-    if winner.lower() == "батл1":
-        winners, losers = team1, team2
-    elif winner.lower() == "батл2":
-        winners, losers = team2, team1
-    else:
-        await ctx.send("⚠️ Укажи победителя: батл1 или батл2.")
-        return
-
-    total_bank = 0
-    # С каждого проигравшего снимаем 50% его баланса
-    for m in losers:
-        bal = balances.get(m.id, 0)
-        penalty = bal // 2
-        balances[m.id] = bal - penalty
-        total_bank += penalty
-        await save_database()
-
-    # Делим банк между победителями
-    reward_each = total_bank // len(winners)
-    for m in winners:
-        balances[m.id] = balances.get(m.id, 0) + reward_each
-        await save_database()
-
-    # Итоговое сообщение
-    winners_list = ", ".join(m.mention for m in winners)
-    losers_list = ", ".join(m.mention for m in losers)
-    await ctx.send(
-        f"✅ Батл {battle_id} завершён!\n"
-        f"🏆 Победители ({winner}): {winners_list} (+{reward_each} монет каждому)\n"
-        f"💀 Проигравшие: {losers_list} (минус 50% баланса)\n"
-        f"💰 Общий банк: {total_bank} монет"
-    )
-
-    # Удаляем батл
-    del active_battles[battle_id]
-
-from discord.ui import View, Button
-
 # ==================== БАТЛЫ С МЕСТАМИ (плюс/минус) ====================
 active_battles_places = {}
 
-@bot.command(name="батл-места")
-async def create_battle_places(ctx, battle_id: str):
-    judge_role = ctx.guild.get_role(JUDGE_ROLE_ID)
-    if judge_role not in ctx.author.roles:
-        await ctx.send("❌ Только Судья может создавать такие батлы.")
-        return
-
-    if battle_id in active_battles_places:
-        await ctx.send(f"⚠️ Батл с ID {battle_id} уже существует.")
-        return
-
-    active_battles_places[battle_id] = {"teams": {}}
-    await ctx.send(f"✅ Создан батл с местами. ID: {battle_id}")
-
-
-# --- Кнопка для вступления/выхода ---
 class JoinTeamButton(View):
     def __init__(self, battle_id, team_number):
         super().__init__(timeout=None)
@@ -414,9 +284,24 @@ class JoinTeamButton(View):
             ephemeral=True
         )
 
+@bot.command(name="батл-места")
+async def create_battle_places(ctx, battle_id: str):
+    JUDGE_ROLE_ID = 1407534809034784879
+    judge_role = ctx.guild.get_role(JUDGE_ROLE_ID)
+    if judge_role not in ctx.author.roles:
+        await ctx.send("❌ Только Судья может создавать такие батлы.")
+        return
+
+    if battle_id in active_battles_places:
+        await ctx.send(f"⚠️ Батл с ID {battle_id} уже существует.")
+        return
+
+    active_battles_places[battle_id] = {"teams": {}}
+    await ctx.send(f"✅ Создан батл с местами. ID: {battle_id}")
 
 @bot.command(name="батл-места-команда")
 async def add_team_places(ctx, team_number: int, battle_id: str, percent: str):
+    JUDGE_ROLE_ID = 1407534809034784879
     judge_role = ctx.guild.get_role(JUDGE_ROLE_ID)
     if judge_role not in ctx.author.roles:
         await ctx.send("❌ Только Судья может добавлять команды.")
@@ -437,14 +322,12 @@ async def add_team_places(ctx, team_number: int, battle_id: str, percent: str):
         await ctx.send("⚠️ Используй знак + или - перед числом процентов.")
         return
 
-    # Создаём команду (участников пока нет, будут вступать через кнопку)
     active_battles_places[battle_id]["teams"][team_number] = {
         "members": [],
         "sign": sign,
         "percent": value
     }
 
-    # Отправляем сообщение с кнопками
     if sign == "+":
         await ctx.send(
             f"✅ Создана команда {team_number} (победители) для батла {battle_id}.\n"
@@ -458,9 +341,9 @@ async def add_team_places(ctx, team_number: int, battle_id: str, percent: str):
             view=JoinTeamButton(battle_id, team_number)
         )
 
-
 @bot.command(name="батл-места-конец")
 async def end_battle_places(ctx, battle_id: str):
+    JUDGE_ROLE_ID = 1407534809034784879
     judge_role = ctx.guild.get_role(JUDGE_ROLE_ID)
     if judge_role not in ctx.author.roles:
         await ctx.send("❌ Только Судья может завершать батлы.")
@@ -474,19 +357,17 @@ async def end_battle_places(ctx, battle_id: str):
     total_bank = 0
     results = []
 
-    # --- Снимаем монеты с проигравших ---
     for team_number, team in battle["teams"].items():
         if team["sign"] == "-":
             for member in team["members"]:
-                balance = balances.get(member.id, 0)
-                take = balance * team["percent"] // 100
+                balance_val = balances.get(member.id, 0)
+                take = balance_val * team["percent"] // 100
                 if take > 0:
                     success, new_balance = await change_balance(member, -take)
                     if success:
                         total_bank += take
                         results.append(f"💸 {member.mention} потерял {take} монет (баланс {new_balance})")
 
-    # --- Раздаём монеты победителям ---
     for team_number, team in battle["teams"].items():
         if team["sign"] == "+" and team["members"]:
             reward_total = total_bank * team["percent"] // 100
@@ -497,7 +378,6 @@ async def end_battle_places(ctx, battle_id: str):
                     if success:
                         results.append(f"🏆 {member.mention} получил {reward_per_member} монет (баланс {new_balance})")
 
-    # --- Итог ---
     del active_battles_places[battle_id]
     await ctx.send(
         f"✅ Батл {battle_id} завершён!\n"
@@ -505,71 +385,562 @@ async def end_battle_places(ctx, battle_id: str):
         ("\n".join(results) if results else "Никто не участвовал.")
     )
 
-#=============== Кинуть перчатку в @user ====================
-@bot.command(name="кинуть-перчатку-в")
-async def challenge_cmd(ctx, opponent: discord.Member):
-    challenger = ctx.author
+# ==================== ДУЭЛИ И СТАВКИ ====================
+active_duels = {}
+active_bets = {}  # {duel_id: {"author": {user_id: amount}, "opponent": {user_id: amount}}}
 
-    # Проверка: нельзя вызвать самого себя
-    if opponent.id == challenger.id:
-        await ctx.send("⚠️ Ты не можешь бросить перчатку самому себе!")
+class AcceptDuelView(View):
+    def __init__(self, duel_id):
+        super().__init__(timeout=None)
+        self.duel_id = duel_id
+
+    @discord.ui.button(label="Принять дуэль", style=discord.ButtonStyle.green)
+    async def accept_duel(self, interaction: discord.Interaction, button: Button):
+        duel = active_duels.get(self.duel_id)
+        if not duel:
+            await interaction.response.send_message("Дуэль не найдена или уже завершена.", ephemeral=True)
+            return
+        
+        if interaction.user.id == duel["author"].id:
+            await interaction.response.send_message("Нельзя принять свою же дуэль!", ephemeral=True)
+            return
+        
+        if duel["accepted_by"]:
+            await interaction.response.send_message("Дуэль уже принята другим участником.", ephemeral=True)
+            return
+
+        duel["accepted_by"] = interaction.user
+        thread = await interaction.message.create_thread(name=f"Дуэль {duel['author'].display_name} vs {interaction.user.display_name}")
+        duel["thread"] = thread
+        
+        # Инициализируем ставки для этой дуэли
+        active_bets[self.duel_id] = {"author": {}, "opponent": {}}
+
+        # Отправляем кнопки для выбора победителя сразу после принятия дуэли
+        embed = discord.Embed(
+            title="Выберите победителя дуэли",
+            description="Каждый участник может выбрать только одного победителя",
+            color=discord.Color.blue()
+        )
+        vote_message = await thread.send(embed=embed, view=VoteWinnerView(self.duel_id))
+        duel["vote_message"] = vote_message  # Сохраняем сообщение с голосованием
+
+        # Уведомляем судей (опционально)
+        judges_channel = bot.get_channel(JUDGES_CHANNEL_ID)
+        if judges_channel:
+            embed = discord.Embed(
+                title="Новая дуэль ожидает судью",
+                description=f"Дуэль между {duel['author'].mention} и {interaction.user.mention}",
+                color=discord.Color.gold()
+            )
+            embed.add_field(name="Дисциплина", value=duel["discipline"])
+            embed.add_field(name="Описание", value=duel["description"])
+            embed.set_footer(text=f"ID дуэли: {self.duel_id}")
+            judge_message = await judges_channel.send(embed=embed, view=TakeDuelView(self.duel_id))
+            duel["judge_message"] = judge_message  # Сохраняем сообщение для судей
+
+        await interaction.response.send_message(f"Вы приняли дуэль! Обсуждение в {thread.mention}.", ephemeral=True)
+        await interaction.message.edit(view=None)
+
+class TakeDuelView(View):
+    def __init__(self, duel_id):
+        super().__init__(timeout=None)
+        self.duel_id = duel_id
+
+    @discord.ui.button(label="Взяться за дуэль", style=discord.ButtonStyle.blurple)
+    async def take_duel(self, interaction: discord.Interaction, button: Button):
+        JUDGE_ROLE_ID = 1407534809034784879
+        judge_role = interaction.guild.get_role(JUDGE_ROLE_ID)
+        if judge_role not in interaction.user.roles:
+            await interaction.response.send_message("Только судьи могут браться за дуэли.", ephemeral=True)
+            return
+
+        duel = active_duels.get(self.duel_id)
+        if not duel:
+            await interaction.response.send_message("Дуэль не найдена.", ephemeral=True)
+            return
+
+        duel["judge"] = interaction.user
+        await interaction.response.send_message(f"Вы взялись судить эту дуэль!", ephemeral=True)
+        
+        # Обновляем сообщение для судей
+        if duel.get("judge_message"):
+            embed = duel["judge_message"].embeds[0]
+            embed.description = f"Дуэль между {duel['author'].mention} и {duel['accepted_by'].mention}\nСудья: {interaction.user.mention}"
+            await duel["judge_message"].edit(embed=embed, view=None)
+        
+        # Если голоса уже разделились, показываем кнопки судье
+        if duel.get("votes_split", False) and duel.get("thread"):
+            embed = discord.Embed(
+                title="Голоса разделились - требуется решение судьи",
+                description="Пожалуйста, выберите победителя дуэли",
+                color=discord.Color.orange()
+            )
+            await duel["thread"].send(embed=embed, view=JudgeDecisionView(self.duel_id))
+
+class VoteWinnerView(View):
+    def __init__(self, duel_id):
+        super().__init__(timeout=None)
+        self.duel_id = duel_id
+        self.votes = {}
+        self.voted_users = set()
+
+    @discord.ui.button(label="Победитель автор", style=discord.ButtonStyle.green, emoji="✅")
+    async def vote_author(self, interaction: discord.Interaction, button: Button):
+        await self.process_vote(interaction, "author")
+
+    @discord.ui.button(label="Победитель оппонент", style=discord.ButtonStyle.green, emoji="✅")
+    async def vote_opponent(self, interaction: discord.Interaction, button: Button):
+        await self.process_vote(interaction, "opponent")
+
+    async def process_vote(self, interaction, vote_type):
+        duel = active_duels.get(self.duel_id)
+        if not duel:
+            await interaction.response.send_message("Дуэль не найдена.", ephemeral=True)
+            return
+
+        if interaction.user.id not in [duel["author"].id, duel["accepted_by"].id]:
+            await interaction.response.send_message("Только участники дуэли могут голосовать.", ephemeral=True)
+            return
+
+        # Проверяем, не голосовал ли уже пользователь
+        if interaction.user.id in self.voted_users:
+            await interaction.response.send_message("Вы уже проголосовали!", ephemeral=True)
+            return
+
+        # Записываем голос и добавляем пользователя в список проголосовавших
+        self.votes[interaction.user.id] = vote_type
+        self.voted_users.add(interaction.user.id)
+
+        # Создаем новое представление с отключенной кнопкой только для этого пользователя
+        new_view = VoteWinnerView(self.duel_id)
+        new_view.votes = self.votes.copy()
+        new_view.voted_users = self.voted_users.copy()
+        
+        # Отключаем кнопки для этого пользователя
+        if interaction.user.id in new_view.voted_users:
+            # Не отключаем кнопки для всех, только сохраняем состояние голосования
+            pass
+
+        # Добавляем реакцию подтверждения
+        await interaction.response.send_message("✅ Ваш голос учтен!", ephemeral=True)
+
+        # Проверяем, есть ли два голоса
+        if len(self.votes) == 2:
+            votes_list = list(self.votes.values())
+            if votes_list[0] == votes_list[1]:
+                winner_type = votes_list[0]
+                if winner_type == "author":
+                    winner = duel["author"]
+                    loser = duel["accepted_by"]
+                else:
+                    winner = duel["accepted_by"]
+                    loser = duel["author"]
+
+                # Переводим 50% баланса проигравшего победителю
+                loser_balance = balances.get(loser.id, 0)
+                amount = loser_balance // 2
+                if amount > 0:
+                    success, new_balance = await change_balance(winner, amount)
+                    if success:
+                        await change_balance(loser, -amount)
+                        # Обрабатываем ставки
+                        await self.process_bets(winner_type, duel, interaction)
+                        # Убираем кнопки полностью после завершения голосования
+                        await interaction.message.edit(view=None)
+                        await interaction.followup.send(
+                            f"🏆 Победитель: {winner.mention}\n"
+                            f"💸 С баланса {loser.mention} списано {amount} монет\n"
+                            f"💰 Баланс {winner.mention}: {new_balance} монет"
+                        )
+                else:
+                    # Обрабатываем ставки
+                    await self.process_bets(winner_type, duel, interaction)
+                    # Убираем кнопки полностью после завершения голосования
+                    await interaction.message.edit(view=None)
+                    await interaction.followup.send("Недостаточно монет для перевода.")
+                
+                # Удаляем дуэль из активных
+                if self.duel_id in active_duels:
+                    del active_duels[self.duel_id]
+                # Удаляем ставки для этой дуэли
+                if self.duel_id in active_bets:
+                    del active_bets[self.duel_id]
+            else:
+                # Голоса разделились - отмечаем это и ждем судью
+                duel["votes_split"] = True
+                # Убираем кнопки полностью после завершения голосования
+                await interaction.message.edit(view=None)
+                await interaction.followup.send("Голоса разделились! Ожидаем решение судьи.")
+                
+                # Если судья уже назначен, отправляем ему кнопки для решения
+                if duel.get("judge") and duel.get("thread"):
+                    embed = discord.Embed(
+                        title="Голоса разделились - требуется решение судьи",
+                        description="Пожалуйста, выберите победителя дуэли",
+                        color=discord.Color.orange()
+                    )
+                    await duel["thread"].send(embed=embed, view=JudgeDecisionView(self.duel_id))
+    
+    async def process_bets(self, winner_type, duel, interaction):
+        """Обрабатывает ставки после завершения дуэли"""
+        if self.duel_id not in active_bets:
+            return
+            
+        bets = active_bets[self.duel_id]
+        total_author_bets = sum(bets["author"].values())
+        total_opponent_bets = sum(bets["opponent"].values())
+        
+        # Определяем победившую и проигравшую стороны
+        winning_side = "author" if winner_type == "author" else "opponent"
+        losing_side = "opponent" if winner_type == "author" else "author"
+        
+        total_winning_bets = sum(bets[winning_side].values())
+        total_losing_bets = sum(bets[losing_side].values())
+        
+        # Общий банк (все ставки)
+        total_bank = total_author_bets + total_opponent_bets
+        
+        # Если есть ставки на победившую сторону, распределяем выигрыш
+        if total_winning_bets > 0 and total_losing_bets > 0:
+            # Коэффициент выигрыша: доля от проигравшего банка на каждого победителя
+            win_multiplier = total_losing_bets / total_winning_bets
+            
+            # Выплачиваем выигрыш (ставка возвращается + доля от проигравшего банка)
+            for user_id, amount in bets[winning_side].items():
+                win_amount = amount + int(amount * win_multiplier)
+                member = interaction.guild.get_member(user_id)
+                if member:
+                    await change_balance(member, win_amount)
+                    try:
+                        await member.send(f"🎉 Вы выиграли {win_amount} монет на дуэли {self.duel_id} (ставка: {amount} монет, выигрыш: {int(amount * win_multiplier)} монет)!")
+                    except:
+                        pass  # Не удалось отправить ЛС
+        
+        # Если есть только ставки на победившую сторону (нет проигравших ставок)
+        elif total_winning_bets > 0:
+            # Просто возвращаем ставки
+            for user_id, amount in bets[winning_side].items():
+                member = interaction.guild.get_member(user_id)
+                if member:
+                    await change_balance(member, amount)
+                    try:
+                        await member.send(f"💰 Вам возвращена ставка {amount} монет на дуэли {self.duel_id} (нет проигравших ставок).")
+                    except:
+                        pass
+        
+        # Отправляем результаты ставок в тред
+        result_text = [
+            f"📊 **Результаты ставок на дуэль:**",
+            f"🏆 Победитель: {winning_side}",
+            f"💰 Общий банк: {total_bank} монет",
+            f"📈 Ставок на автора: {total_author_bets} монет",
+            f"📈 Ставок на оппонента: {total_opponent_bets} монет",
+        ]
+        
+        if total_winning_bets > 0 and total_losing_bets > 0:
+            win_multiplier = total_losing_bets / total_winning_bets
+            result_text.append(f"🎯 Коэффициент выигрыша: x{win_multiplier:.2f} (ставка возвращается + выигрыш)")
+        elif total_winning_bets > 0:
+            result_text.append("💰 Все ставки возвращены (нет проигравших ставок)")
+        
+        await interaction.followup.send("\n".join(result_text))
+
+class JudgeDecisionView(View):
+    def __init__(self, duel_id):
+        super().__init__(timeout=None)
+        self.duel_id = duel_id
+
+    @discord.ui.button(label="Победитель автор", style=discord.ButtonStyle.green)
+    async def decide_author(self, interaction: discord.Interaction, button: Button):
+        await self.process_decision(interaction, "author")
+
+    @discord.ui.button(label="Победитель оппонент", style=discord.ButtonStyle.green)
+    async def decide_opponent(self, interaction: discord.Interaction, button: Button):
+        await self.process_decision(interaction, "opponent")
+
+    async def process_decision(self, interaction, decision):
+        duel = active_duels.get(self.duel_id)
+        if not duel:
+            await interaction.response.send_message("Дуэль не найдена.", ephemeral=True)
+            return
+
+        # Проверяем, что решение принимает судья
+        JUDGE_ROLE_ID = 1407534809034784879
+        judge_role = interaction.guild.get_role(JUDGE_ROLE_ID)
+        if judge_role not in interaction.user.roles:
+            await interaction.response.send_message("Только судьи могут принимать решение.", ephemeral=True)
+            return
+
+        if not duel.get("judge") or interaction.user.id != duel["judge"].id:
+            await interaction.response.send_message("Только назначенный судья может принимать решение.", ephemeral=True)
+            return
+
+        if decision == "author":
+            winner = duel["author"]
+            loser = duel["accepted_by"]
+            winner_type = "author"
+        else:
+            winner = duel["accepted_by"]
+            loser = duel["author"]
+            winner_type = "opponent"
+
+        # Переводим 50% баланса проигравшего победителю
+        loser_balance = balances.get(loser.id, 0)
+        amount = loser_balance // 2
+        if amount > 0:
+            success, new_balance = await change_balance(winner, amount)
+            if success:
+                await change_balance(loser, -amount)
+                # Обрабатываем ставки
+                await self.process_bets(winner_type, duel, interaction)
+                await interaction.response.send_message(
+                    f"🏆 Победитель: {winner.mention}\n"
+                    f"💸 С баланса {loser.mention} списано {amount} монет\n"
+                    f"💰 Баланс {winner.mention}: {new_balance} монет"
+                )
+        else:
+            # Обрабатываем ставки
+            await self.process_bets(winner_type, duel, interaction)
+            await interaction.response.send_message("Недостаточно монет для перевода.")
+
+        # Удаляем дуэль из активных
+        if self.duel_id in active_duels:
+            del active_duels[self.duel_id]
+        # Удаляем ставки для этой дуэли
+        if self.duel_id in active_bets:
+            del active_bets[self.duel_id]
+        
+        # Убираем кнопки
+        await interaction.message.edit(view=None)
+    
+    async def process_bets(self, winner_type, duel, interaction):
+        """Обрабатывает ставки после завершения дуэли"""
+        if self.duel_id not in active_bets:
+            return
+            
+        bets = active_bets[self.duel_id]
+        total_author_bets = sum(bets["author"].values())
+        total_opponent_bets = sum(bets["opponent"].values())
+        
+        # Определяем победившую и проигравшую стороны
+        winning_side = "author" if winner_type == "author" else "opponent"
+        losing_side = "opponent" if winner_type == "author" else "author"
+        
+        total_winning_bets = sum(bets[winning_side].values())
+        total_losing_bets = sum(bets[losing_side].values())
+        
+        # Общий банк (все ставки)
+        total_bank = total_author_bets + total_opponent_bets
+        
+        # Если есть ставки на победившую сторону, распределяем выигрыш
+        if total_winning_bets > 0 and total_losing_bets > 0:
+            # Коэффициент выигрыша: доля от проигравшего банка на каждого победителя
+            win_multiplier = total_losing_bets / total_winning_bets
+            
+            # Выплачиваем выигрыш (ставка возвращается + доля от проигравшего банка)
+            for user_id, amount in bets[winning_side].items():
+                win_amount = amount + int(amount * win_multiplier)
+                member = interaction.guild.get_member(user_id)
+                if member:
+                    await change_balance(member, win_amount)
+                    try:
+                        await member.send(f"🎉 Вы выиграли {win_amount} монет на дуэли {self.duel_id} (ставка: {amount} монет, выигрыш: {int(amount * win_multiplier)} монет)!")
+                    except:
+                        pass  # Не удалось отправить ЛС
+        
+        # Если есть только ставки на победившую сторону (нет проигравших ставок)
+        elif total_winning_bets > 0:
+            # Просто возвращаем ставки
+            for user_id, amount in bets[winning_side].items():
+                member = interaction.guild.get_member(user_id)
+                if member:
+                    await change_balance(member, amount)
+                    try:
+                        await member.send(f"💰 Вам возвращена ставка {amount} монет на дуэли {self.duel_id} (нет проигравших ставок).")
+                    except:
+                        pass
+        
+        # Отправляем результаты ставок в тред
+        result_text = [
+            f"📊 **Результаты ставок на дуэль:**",
+            f"🏆 Победитель: {winning_side}",
+            f"💰 Общий банк: {total_bank} монет",
+            f"📈 Ставок на автора: {total_author_bets} монет",
+            f"📈 Ставок на оппонента: {total_opponent_bets} монет",
+        ]
+        
+        if total_winning_bets > 0 and total_losing_bets > 0:
+            win_multiplier = total_losing_bets / total_winning_bets
+            result_text.append(f"🎯 Коэффициент выигрыша: x{win_multiplier:.2f} (ставка возвращается + выигрыш)")
+        elif total_winning_bets > 0:
+            result_text.append("💰 Все ставки возвращены (нет проигравших ставок)")
+        
+        await interaction.followup.send("\n".join(result_text))
+
+@bot.command(name="дуэль")
+async def duel_cmd(ctx):
+    # Проверяем, что автор не имеет активной дуэли
+    for duel in active_duels.values():
+        if duel["author"].id == ctx.author.id:
+            await ctx.send("У вас уже есть активная дуэль!", delete_after=15)
+            return
+
+    # Запрос дисциплины
+    await ctx.send("Введите дисциплину для дуэли:", delete_after=15)
+    try:
+        discipline_msg = await bot.wait_for(
+            'message',
+            timeout=60,
+            check=lambda m: m.author == ctx.author and m.channel == ctx.channel
+        )
+        discipline = discipline_msg.content
+    except asyncio.TimeoutError:
+        await ctx.send("Время вышло!", delete_after=15)
         return
 
-    # Проверка: у оппонента должен быть баланс
-    opp_balance = balances.get(opponent.id, 0)
-    if opp_balance <= 0:
-        return  # тишина, чтобы не беспокоить
-
-    # Сообщение с вызовом
-    msg = await ctx.send(
-        f"🥊 {opponent.mention}, тебе бросил перчатку {challenger.mention}!\n"
-        f"Нажми ✅, если принимаешь вызов."
-    )
-    await msg.add_reaction("✅")
-
-    def check(reaction, user):
-        return (
-            user == opponent
-            and str(reaction.emoji) == "✅"
-            and reaction.message.id == msg.id
-        )
-
+    # Запрос описания
+    await ctx.send("Введите описание дуэли:", delete_after=15)
     try:
-        # Ждём реакции оппонента
-        await bot.wait_for("reaction_add", timeout=300, check=check)
-
-        # Генерируем ID батла
-        battle_id = f"battle_{random.randint(1000, 9999)}"
-
-        # Отправляем в канал судей
-        judges_channel = bot.get_channel(JUDGES_CHANNEL_ID)
-
-        class BattleView(View):
-            def __init__(self):
-                super().__init__(timeout=None)
-
-            @discord.ui.button(label="Взять батл", style=discord.ButtonStyle.primary)
-            async def take_battle(self, interaction: discord.Interaction, button: Button):
-                await interaction.response.send_message(
-                    f"✅ Судья {interaction.user.mention} взял батл {battle_id} под своё крыло!",
-                    ephemeral=False
-                )
-                # Можно добавить запись в базу, кто ведёт батл
-                self.stop()
-
-        await judges_channel.send(
-            f"⚔️ Новый батл: **{battle_id}**\n"
-            f"👤 Игрок 1: {challenger.mention}\n"
-            f"👤 Игрок 2: {opponent.mention}",
-            view=BattleView()
+        description_msg = await bot.wait_for(
+            'message',
+            timeout=60,
+            check=lambda m: m.author == ctx.author and m.channel == ctx.channel
         )
-
-        await ctx.send(f"✅ Батл принят! Код батла: **{battle_id}**")
-
+        description = description_msg.content
     except asyncio.TimeoutError:
-        await ctx.send(f"⌛ {opponent.mention} не принял вызов. Батл отменён.")
+        await ctx.send("Время вышло!", delete_after=15)
+        return
 
-# ====================  Меню товаров ==================== 
+    # Удаляем сообщения
+    try:
+        await ctx.message.delete()
+        await discipline_msg.delete()
+        await description_msg.delete()
+    except:
+        pass
+
+    # Создаем дуэль
+    duel_id = f"duel_{random.randint(1000, 9999)}"
+    active_duels[duel_id] = {
+        "author": ctx.author,
+        "discipline": discipline,
+        "description": description,
+        "accepted_by": None,
+        "judge": None,
+        "thread": None,
+        "vote_message": None,
+        "judge_message": None,
+        "votes_split": False
+    }
+
+    # Отправляем анкету в канал дуэлей
+    duels_channel = bot.get_channel(DUELS_CHANNEL_ID)
+    if duels_channel:
+        embed = discord.Embed(
+            title="Новая дуэль",
+            description=f"Автор: {ctx.author.mention}",
+            color=discord.Color.purple()
+        )
+        embed.add_field(name="Дисциплина", value=discipline)
+        embed.add_field(name="Описание", value=description)
+        embed.set_footer(text=f"ID: {duel_id}")
+        await duels_channel.send(embed=embed, view=AcceptDuelView(duel_id))
+
+    await ctx.send("Дуэль создана! Анкета отправлена в канал дуэлей.", delete_after=15)
+
+#=========================Ставки========================
+@bot.command(name="ставка")
+async def bet_cmd(ctx, percent: str, side: str):
+    # Проверяем формат процента
+    if not percent.endswith('%'):
+        await ctx.send("Укажите процент в формате: 10%", delete_after=15)
+        return
+    
+    try:
+        percent_value = float(percent[:-1])
+        if percent_value <= 0 or percent_value > 100:
+            await ctx.send("Процент должен быть больше 0 и не больше 100", delete_after=15)
+            return
+    except ValueError:
+        await ctx.send("Неверный формат процента", delete_after=15)
+        return
+    
+    # Проверяем сторону и преобразуем в английский ключ
+    side_lower = side.lower()
+    if side_lower == "автор":
+        side_key = "author"
+    elif side_lower == "оппонент":
+        side_key = "opponent"
+    else:
+        await ctx.send("Укажите сторону: автор или оппонент", delete_after=15)
+        return
+    
+    # Ищем активную дуэль в этом канале (треде)
+    duel_id = None
+    for did, duel in active_duels.items():
+        if duel.get("thread") and duel["thread"].id == ctx.channel.id:
+            duel_id = did
+            break
+    
+    if not duel_id:
+        await ctx.send("Ставки можно делать только в тредах активных дуэлей!", delete_after=15)
+        return
+    
+    # Проверяем, что дуэль уже принята (есть оба участника)
+    duel = active_duels[duel_id]
+    if not duel["accepted_by"]:
+        await ctx.send("Ставки можно делать только после того, как дуэль принята!", delete_after=15)
+        return
+    
+    # Проверяем, что пользователь не участник дуэли
+    if ctx.author.id in [duel["author"].id, duel["accepted_by"].id]:
+        await ctx.send("Участники дуэли не могут делать ставки!", delete_after=15)
+        return
+    
+    # Проверяем, что дуэль еще не завершена
+    if duel_id not in active_duels:
+        await ctx.send("Эта дуэль уже завершена!", delete_after=15)
+        return
+    
+    # Проверяем, что у пользователя достаточно денег
+    user_balance = balances.get(ctx.author.id, 0)
+    bet_amount = int(user_balance * percent_value / 100)
+    
+    if bet_amount <= 0:
+        await ctx.send("Сумма ставки должна быть больше 0!", delete_after=15)
+        return
+    
+    if user_balance < bet_amount:
+        await ctx.send("Недостаточно средств для ставки!", delete_after=15)
+        return
+    
+    # Проверяем, не делал ли пользователь уже ставку на эту дуэль
+    if duel_id in active_bets:
+        user_bets = active_bets[duel_id]
+        if ctx.author.id in user_bets["author"] or ctx.author.id in user_bets["opponent"]:
+            await ctx.send("Вы уже сделали ставку на эту дуэль!", delete_after=15)
+            return
+    
+    # Снимаем деньги и регистрируем ставку
+    success, new_balance = await change_balance(ctx.author, -bet_amount)
+    if not success:
+        await ctx.send("Ошибка при списании средств!", delete_after=15)
+        return
+    
+    # Добавляем ставку
+    if duel_id not in active_bets:
+        active_bets[duel_id] = {"author": {}, "opponent": {}}
+    
+    active_bets[duel_id][side_key][ctx.author.id] = bet_amount
+    
+    await ctx.send(
+        f"{ctx.author.mention} поставил(а) {bet_amount} монет на {side_lower}.\n"
+        f"Новый баланс: {new_balance} монет",
+        delete_after=15
+    )
+
+# ==================== МАГАЗИН ====================
 shop_items = [
     {"name": "Призыв меня в голосовой канал на (как минимум) 5 минут", "price": 50, "emoji": "🎤"},
     {"name": "Собственная роль", "price": 1000, "emoji": "📜"},
@@ -581,7 +952,7 @@ shop_items = [
 ]
 
 @bot.command(name="магазин")
-@commands.has_permissions(administrator=True)  # Только администратор
+@commands.has_permissions(administrator=True)
 async def shop_cmd(ctx):
     embed = discord.Embed(
         title="🛒 Магазин",
@@ -596,7 +967,6 @@ async def shop_cmd(ctx):
 
     shop_msg = await ctx.send(embed=embed)
 
-    # Добавляем реакции
     for item in shop_items:
         await shop_msg.add_reaction(item['emoji'])
     await shop_msg.add_reaction("✅")
@@ -628,21 +998,16 @@ async def shop_cmd(ctx):
                     await error_msg.delete(delay=15)
                     continue
 
-                # Списываем деньги
                 balances[user.id] = bal - price
                 await save_database()
 
-                # Генерируем номер заказа
                 order_id = f"N{random.randint(1000, 9999)}"
-
-                # Сообщение в канал заказов
                 orders_channel = bot.get_channel(ORDERS_CHANNEL_ID)
                 await orders_channel.send(
                     f"📦 Заказ {order_id}\n👤 Покупатель: {user.mention}\n"
                     f"🛍️ Товар: **{item['name']}** ({price} монет)"
                 )
 
-                # Ответ пользователю (удаляется через 15 сек)
                 confirm_msg = await ctx.send(
                     f"✅ {user.mention}, заказ {order_id} оформлен!\n"
                     f"Ты купил **{item['name']}** за {price} монет."
@@ -650,7 +1015,6 @@ async def shop_cmd(ctx):
                 await confirm_msg.delete(delay=15)
 
             else:
-                # Пользователь выбрал товар (сообщение удаляется через 15 сек)
                 for item in shop_items:
                     if str(reaction.emoji) == item["emoji"]:
                         user_choices[user.id] = item
@@ -662,19 +1026,7 @@ async def shop_cmd(ctx):
     except asyncio.TimeoutError:
         pass
 
-
-#=============Таймаут запросов===================
-async def some_function():
-    # Выполнение запроса
-    await asyncio.sleep(1)  # Пауза в 1 секунду между запросами
-
-# Основной цикл
-async def main():
-    await some_function()
-
-
 # ==================== ЗАПУСК ====================
 if __name__ == "__main__":
-    keep_alive()  # Запускаем веб-сервер для UptimeRobot
-    asyncio.run(main())
+    keep_alive()
     bot.run(TOKEN)
