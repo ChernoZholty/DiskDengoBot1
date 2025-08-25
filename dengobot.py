@@ -163,7 +163,7 @@ async def on_voice_state_update(member, before, after):
         if log_channel:
             await log_channel.send(f"✅ {member} зашёл в {after.channel}, роль выдана.")
         if command_channel:
-            await command_channel.send(f"🎧 {member.mention}, добро пожаловать в {after.channel.mention}!")
+            await command_channel.send(f"🎧 {member.display_name}, добро пожаловать в {after.channel.mention}!")
     if before.channel is not None and after.channel is None:
         if role and role in member.roles:
             try:
@@ -178,7 +178,7 @@ async def on_voice_state_update(member, before, after):
                 success, total_balance = await change_balance(member, money)
                 if success and command_channel:
                     await command_channel.send(
-                        f"💰 {member.mention}, тебе начислено **{money}** монет "
+                        f"💰 {member.display_name}, тебе начислено **{money}** монет "
                         f"(за {minutes} мин). Баланс: **{total_balance}**."
                     )
                 if log_channel:
@@ -189,7 +189,7 @@ async def on_voice_state_update(member, before, after):
             else:
                 if command_channel:
                     await command_channel.send(
-                        f"⚠️ {member.mention}, был в войсе <1 мин. Монеты не начислены."
+                        f"⚠️ {member.display_name}, был в войсе <1 мин. Монеты не начислены."
                     )
                 if log_channel:
                     await log_channel.send(
